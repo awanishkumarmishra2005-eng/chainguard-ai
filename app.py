@@ -11,7 +11,7 @@ except Exception:  # pragma: no cover
 
 app = Flask(__name__)
 
-APP_VERSION = "v4-final"
+APP_VERSION = "v5-test"
 
 DB_HOST = os.getenv("DB_HOST", "localhost")
 DB_PORT = int(os.getenv("DB_PORT", "6379"))
