@@ -607,13 +607,15 @@
             try {
                 const data = await requestJSON("/api/health");
 
-                status.textContent = "● FalkorDB connected";
-                status.style.color = "#4ade80";
-
-                showMessage(
-                    "Database connection successful: " + data.database,
-                    "success"
-                );
+                if (data.database === "demo_mode") {
+                    status.textContent = "● Demo mode (synthetic data)";
+                    status.style.color = "#fbbf24";
+                    showMessage("Demo mode is active. The graph and findings use fictional sample data; no live database is connected.", "success");
+                } else {
+                    status.textContent = "● FalkorDB connected";
+                    status.style.color = "#4ade80";
+                    showMessage("Database connection successful: " + data.database, "success");
+                }
             } catch (error) {
                 status.textContent = "● Database unavailable";
                 status.style.color = "#fb7185";
@@ -959,7 +961,9 @@
                 const paths = data.paths || [];
                 container.replaceChildren();
 
-                summary.textContent = `${data.path_count ?? paths.length} connected paths returned from FalkorDB.`;
+                summary.textContent = data.demo_mode
+                    ? `${data.path_count ?? paths.length} connected paths from fictional demo data.`
+                    : `${data.path_count ?? paths.length} connected paths returned from FalkorDB.`;
 
                 if (!paths.length) {
                     const empty = document.createElement("div");
@@ -1036,7 +1040,7 @@
                 });
 
                 if (showNotice) {
-                    showMessage("Threat paths loaded from FalkorDB.", "success");
+                    showMessage(data.demo_mode ? "Threat paths loaded from fictional demo data." : "Threat paths loaded from FalkorDB.", "success");
                 }
             } catch (error) {
                 summary.textContent = "Could not retrieve threat paths.";
@@ -1060,27 +1064,15 @@
 
         initialize();
     </script>
-    
-        initialize();
-    }
-</script>
 
-<section id="ai-explainer" style="margin: 24px 0; padding: 20px; border: 1px solid #475569; border-radius: 12px;">
+<section id="ai-explainer" style="max-width: 1370px; margin: 24px auto; padding: 20px; border: 1px solid #293650; border-radius: 12px; background: #121a2d;">
   <h2>ChainGuard AI Explainer</h2>
-  <p>Ask the local Qwen model to explain a security finding. Your question is sent to your local Flask server.</p>
-
+  <p style="color:#a2aec5;">Ask for an explanation. Locally, this uses Ollama/Qwen. On the hosted demo, it uses a clearly labelled rule-based explanation.</p>
   <label for="ai-question">Your question</label>
-  <textarea
-    id="ai-question"
-    rows="3"
-    style="display:block; width:100%; box-sizing:border-box; margin:10px 0; padding:12px;"
-    placeholder="Why might an unfamiliar device and external IP deserve investigation?"
-  ></textarea>
-
-  <button id="ai-ask-button" type="button">Ask Local AI</button>
-
-  <p id="ai-status" role="status" aria-live="polite"></p>
-  <div id="ai-answer" style="white-space:pre-wrap;"></div>
+  <textarea id="ai-question" rows="3" style="display:block; width:100%; box-sizing:border-box; margin:10px 0; padding:12px; border-radius:8px;" placeholder="Why might an unfamiliar device and external IP deserve investigation?"></textarea>
+  <button id="ai-ask-button" type="button" class="primary">Ask ChainGuard</button>
+  <p id="ai-status" role="status" aria-live="polite" style="color:#a2aec5;"></p>
+  <div id="ai-answer" style="white-space:pre-wrap; overflow-wrap:anywhere;"></div>
 </section>
 
 <script>
@@ -1097,7 +1089,7 @@
     }
 
     button.disabled = true;
-    status.textContent = "Asking local Qwen model...";
+    status.textContent = "Preparing explanation...";
     answer.textContent = "";
 
     try {
@@ -1106,17 +1098,15 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ question })
       });
-
       const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.error || "AI request failed.");
-      }
+      if (!response.ok) throw new Error(data.error || "Explanation request failed.");
 
       answer.textContent = data.answer || "No answer was returned.";
-      status.textContent = "Response received from local AI.";
+      status.textContent = data.mode === "local_ollama"
+        ? "Response received from your local Ollama model."
+        : "Demo-mode response: rule-based explanation, not a live AI model.";
     } catch (error) {
-      status.textContent = "Could not get an AI response: " + error.message;
+      status.textContent = "Could not get an explanation: " + error.message;
     } finally {
       button.disabled = false;
     }
