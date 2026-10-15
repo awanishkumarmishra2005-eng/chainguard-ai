@@ -164,27 +164,33 @@ def demo_paths():
 def home():
     return render_template("index.html")
 
-
 @app.route("/api/health")
 def health():
     if DEMO_MODE:
         return jsonify({
-            "status": "ok", "database": "demo_mode",
+            "status": "ok", "demo_mode": True, "database": "demo_mode",
             "message": "Using synthetic demonstration data; no live database is connected."
-        })
+        }), 503
     try:
         result = get_graph().query("RETURN 'connected' AS status")
         status = result.result_set[0][0] if result.result_set else "connected"
-        return jsonify({"status": "ok", "database": status})
+        return jsonify({"status": "ok", "database": status}), 200
     except Exception:
         app.logger.exception("Health check failed")
-    if DEMO_MODE:
-     return jsonify({
-        "status": "ok",
-        "demo_mode": True,
-        "database": "demo_mode",
-        "message": "Using synthetic demonstration data."
-    }), 200
+        return jsonify({
+            "status": "error", "database": "unavailable",
+            "message": "FalkorDB is not reachable. Set DEMO_MODE=true or start the database."
+        }), 503
+    try:
+        result = get_graph().query("RETURN 'connected' AS status")
+        status = result.result_set[0][0] if result.result_set else "connected"
+        return jsonify({"status": "ok", "database": status}), 200
+    except Exception:
+        app.logger.exception("Health check failed")
+        return jsonify({
+            "status": "error", "database": "unavailable",
+            "message": "FalkorDB is not reachable. Set DEMO_MODE=true or start the database."
+        }), 503
 
 @app.route("/api/seed", methods=["POST"])
 def seed():
