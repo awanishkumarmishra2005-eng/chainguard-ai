@@ -122,9 +122,12 @@ RISK_PRIORITY = {"HIGH": 0, "MEDIUM": 1, "LOW": 2}
 # Database helpers (live mode only)
 # ---------------------------------------------------------------------------
 def get_graph():
-    if FalkorDB is None:
-        raise RuntimeError("falkordb library is not installed")
-    db = FalkorDB(host=DB_HOST, port=DB_PORT)
+    db = FalkorDB(
+        host=DB_HOST,
+        port=DB_PORT,
+        username=os.getenv("DB_USERNAME") or None,
+        password=os.getenv("DB_PASSWORD") or None,
+    )
     return db.select_graph(GRAPH_NAME)
 
 
