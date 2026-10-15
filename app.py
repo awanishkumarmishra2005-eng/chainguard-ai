@@ -178,11 +178,13 @@ def health():
         return jsonify({"status": "ok", "database": status})
     except Exception:
         app.logger.exception("Health check failed")
-        return jsonify({
-            "status": "error",
-            "message": "FalkorDB is unavailable. Start the local database or enable DEMO_MODE."
-        }), 503
-
+    if DEMO_MODE:
+     return jsonify({
+        "status": "ok",
+        "demo_mode": True,
+        "database": "demo_mode",
+        "message": "Using synthetic demonstration data."
+    }), 200
 
 @app.route("/api/seed", methods=["POST"])
 def seed():
