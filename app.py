@@ -1,19 +1,45 @@
 import os
-from flask import Flask, jsonify, render_template, request
-from falkordb import FalkorDB
 import requests
+from flask import Flask, jsonify, render_template, request
+
+# Import FalkorDB safely so the app still starts (in demo mode) even if the
+# library or database is unavailable on the hosting platform.
+try:
+    from falkordb import FalkorDB
+except Exception:  # pragma: no cover
+    FalkorDB = None
 
 app = Flask(__name__)
+
+APP_VERSION = "v4-final"
 
 DB_HOST = os.getenv("DB_HOST", "localhost")
 DB_PORT = int(os.getenv("DB_PORT", "6379"))
 GRAPH_NAME = "ChainGuard"
-DEMO_MODE = os.getenv("DEMO_MODE", "false").strip().lower() == "true"
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:1.5b")
 
 
-# This data is fictional and is used only for demonstrating the interface.
+def _resolve_demo_mode():
+    """
+    DEMO_MODE=true  -> demo mode
+    DEMO_MODE=false -> live mode
+    not set         -> demo mode automatically when running on Render
+                       (Render always sets the RENDER env variable),
+                       live mode on your own laptop.
+    """
+    raw = os.getenv("DEMO_MODE")
+    if raw is not None and raw.strip() != "":
+        return raw.strip().strip('"').strip("'").lower() in ("true", "1", "yes", "on")
+    return bool(os.getenv("RENDER"))
+
+
+DEMO_MODE = _resolve_demo_mode()
+
+
+# ---------------------------------------------------------------------------
+# Fictional demo data (used only for demonstrating the interface)
+# ---------------------------------------------------------------------------
 DEMO_ENTITIES = [
     {"id": "user_1", "name": "Aarav Sharma", "kind": "user", "risk": None, "detail": "Finance"},
     {"id": "user_2", "name": "Priya Reddy", "kind": "user", "risk": None, "detail": "Engineering"},
@@ -61,7 +87,7 @@ DEMO_FINDINGS = [
         "reason": "Fictional demo signal: login used an unfamiliar device and an external IP.",
         "timestamp": "2026-10-15 02:14 UTC",
         "recommendation": "Verify the login with the user, review authentication logs, and confirm device ownership.",
-        "notice": "Synthetic demo data. This is not proof of an attack."
+        "notice": "Synthetic demo data. This is not proof of an attack.",
     },
     {
         "user": "Rohan Mehta", "event": "Repeated failed logins", "ip": "203.0.113.77",
@@ -69,7 +95,7 @@ DEMO_FINDINGS = [
         "reason": "Fictional demo signal: several failed attempts were observed from a reserved documentation IP range.",
         "timestamp": "2026-10-15 03:42 UTC",
         "recommendation": "Review authentication logs and verify the activity before taking action.",
-        "notice": "Synthetic demo data. This is not proof of an attack."
+        "notice": "Synthetic demo data. This is not proof of an attack.",
     },
     {
         "user": "Meera Iyer", "event": "Unusual access time", "ip": "198.51.100.24",
@@ -77,7 +103,7 @@ DEMO_FINDINGS = [
         "reason": "Fictional demo signal: access occurred outside the user's usual demo schedule.",
         "timestamp": "2026-10-15 23:18 UTC",
         "recommendation": "Review surrounding authentication events and continue monitoring.",
-        "notice": "Synthetic demo data. This is not proof of an attack."
+        "notice": "Synthetic demo data. This is not proof of an attack.",
     },
     {
         "user": "Priya Reddy", "event": "Normal office login", "ip": "192.168.1.10",
@@ -85,45 +111,59 @@ DEMO_FINDINGS = [
         "reason": "Fictional demo signal: routine login from an internal IP and managed device.",
         "timestamp": "2026-10-15 09:05 UTC",
         "recommendation": "Continue routine monitoring and retain the event for audit history.",
-        "notice": "Synthetic demo data. This is not proof of an attack."
+        "notice": "Synthetic demo data. This is not proof of an attack.",
     },
 ]
 
+RISK_PRIORITY = {"HIGH": 0, "MEDIUM": 1, "LOW": 2}
 
+
+# ---------------------------------------------------------------------------
+# Database helpers (live mode only)
+# ---------------------------------------------------------------------------
 def get_graph():
+    if FalkorDB is None:
+        raise RuntimeError("falkordb library is not installed")
     db = FalkorDB(host=DB_HOST, port=DB_PORT)
     return db.select_graph(GRAPH_NAME)
 
 
 def seed_graph():
-    """Seed FalkorDB with fictional, repeatable security demonstration data."""
+    """Seed FalkorDB with fictional, repeatable demonstration data."""
     graph = get_graph()
     for entity in DEMO_ENTITIES:
-        # All IDs and values here are fixed, developer-authored demo data.
-        name = str(entity["name"]).replace("\\", "\\\\").replace("'", "\\'")
-        detail = str(entity.get("detail") or "").replace("\\", "\\\\").replace("'", "\\'")
-        query = (
-            "MERGE (n:Entity {id: '" + entity["id"] + "'}) "
-            "SET n.kind = '" + entity["kind"] + "', n.name = '" + name + "', "
-            "n.detail = '" + detail + "'"
-        )
-        if entity.get("risk"):
-            query += ", n.risk = '" + entity["risk"] + "'"
-        if entity.get("timestamp"):
-            timestamp = entity["timestamp"].replace("'", "\\'")
-            query += ", n.timestamp = '" + timestamp + "'"
+        params = {
+            "id": entity["id"],
+            "kind": entity["kind"],
+            "name": entity["name"],
+            "detail": entity.get("detail") or "",
+            "risk": entity.get("risk"),
+            "timestamp": entity.get("timestamp"),
+            "reason": None,
+        }
         if entity["kind"] == "event":
             finding = next((f for f in DEMO_FINDINGS if f["event"] == entity["name"]), None)
             if finding:
-                reason = finding["reason"].replace("\\", "\\\\").replace("'", "\\'")
-                query += ", n.reason = '" + reason + "'"
-        graph.query(query)
+                params["reason"] = finding["reason"]
+
+        query = (
+            "MERGE (n:Entity {id: $id}) "
+            "SET n.kind = $kind, n.name = $name, n.detail = $detail"
+        )
+        if params["risk"]:
+            query += ", n.risk = $risk"
+        if params["timestamp"]:
+            query += ", n.timestamp = $timestamp"
+        if params["reason"]:
+            query += ", n.reason = $reason"
+        graph.query(query, params)
 
     for edge in DEMO_EDGES:
+        # Relationship labels cannot be parameterised; these are fixed developer values.
         graph.query(
-            "MATCH (a:Entity {id: '" + edge["source"] + "'}), "
-            "(b:Entity {id: '" + edge["target"] + "'}) "
-            "MERGE (a)-[:" + edge["label"] + "]->(b)"
+            "MATCH (a:Entity {id: $src}), (b:Entity {id: $dst}) "
+            "MERGE (a)-[:" + edge["label"] + "]->(b)",
+            {"src": edge["source"], "dst": edge["target"]},
         )
 
 
@@ -133,44 +173,62 @@ def demo_paths():
     for edge in DEMO_EDGES:
         event = by_id.get(edge["source"])
         connected = by_id.get(edge["target"])
-        if not event or event.get("kind") != "event" or not connected or connected.get("kind") not in ("ip", "device"):
+        if (
+            not event
+            or event.get("kind") != "event"
+            or not connected
+            or connected.get("kind") not in ("ip", "device")
+        ):
             continue
-        user_edge = next((item for item in DEMO_EDGES if item["target"] == event["id"] and item["label"] == "GENERATED"), None)
+        user_edge = next(
+            (i for i in DEMO_EDGES if i["target"] == event["id"] and i["label"] == "GENERATED"),
+            None,
+        )
         if not user_edge:
             continue
         user = by_id[user_edge["source"]]
-        finding = next((item for item in DEMO_FINDINGS if item["event"] == event["name"]), {})
+        finding = next((i for i in DEMO_FINDINGS if i["event"] == event["name"]), {})
         paths.append({
             "user": {"id": user["id"], "name": user["name"]},
             "event": {
-                "id": event["id"], "name": event["name"], "risk": event.get("risk") or "UNKNOWN",
+                "id": event["id"], "name": event["name"],
+                "risk": event.get("risk") or "UNKNOWN",
                 "reason": finding.get("reason", event.get("detail", "")),
-                "timestamp": event.get("timestamp")
+                "timestamp": event.get("timestamp"),
             },
             "relationship_from_user": "GENERATED",
             "relationship_to_entity": edge["label"],
             "connected_entity": {
-                "id": connected["id"], "name": connected["name"], "kind": connected["kind"],
-                "detail": connected.get("detail")
+                "id": connected["id"], "name": connected["name"],
+                "kind": connected["kind"], "detail": connected.get("detail"),
             },
-            "notice": "Synthetic demo data. A graph connection is a lead for review, not proof of malicious activity."
+            "notice": "Synthetic demo data. A graph connection is a lead for review, not proof of malicious activity.",
         })
-    priority = {"HIGH": 0, "MEDIUM": 1, "LOW": 2}
-    paths.sort(key=lambda item: priority.get(item["event"]["risk"], 3))
+    paths.sort(key=lambda item: RISK_PRIORITY.get(item["event"]["risk"], 3))
     return paths
 
 
+# ---------------------------------------------------------------------------
+# Routes
+# ---------------------------------------------------------------------------
 @app.route("/")
 def home():
     return render_template("index.html")
+
+
+@app.route("/api/version")
+def version():
+    """Quick check of which code and mode is actually running."""
+    return jsonify({"version": APP_VERSION, "demo_mode": DEMO_MODE})
+
 
 @app.route("/api/health")
 def health():
     if DEMO_MODE:
         return jsonify({
             "status": "ok", "demo_mode": True, "database": "demo_mode",
-            "message": "Using synthetic demonstration data; no live database is connected."
-        }), 503
+            "message": "Using synthetic demonstration data; no live database is connected.",
+        }), 200
     try:
         result = get_graph().query("RETURN 'connected' AS status")
         status = result.result_set[0][0] if result.result_set else "connected"
@@ -179,25 +237,16 @@ def health():
         app.logger.exception("Health check failed")
         return jsonify({
             "status": "error", "database": "unavailable",
-            "message": "FalkorDB is not reachable. Set DEMO_MODE=true or start the database."
-        }), 503
-    try:
-        result = get_graph().query("RETURN 'connected' AS status")
-        status = result.result_set[0][0] if result.result_set else "connected"
-        return jsonify({"status": "ok", "database": status}), 200
-    except Exception:
-        app.logger.exception("Health check failed")
-        return jsonify({
-            "status": "error", "database": "unavailable",
-            "message": "FalkorDB is not reachable. Set DEMO_MODE=true or start the database."
+            "message": "FalkorDB is not reachable. Set DEMO_MODE=true or start the database.",
         }), 503
 
-@app.route("/api/seed", methods=["POST"])
+
+@app.route("/api/seed", methods=["POST", "GET"])
 def seed():
     if DEMO_MODE:
         return jsonify({
             "status": "ok", "demo_mode": True,
-            "message": "Fictional demo data is ready. No database write was needed."
+            "message": "Fictional demo data is ready. No database write was needed.",
         })
     try:
         seed_graph()
@@ -212,7 +261,7 @@ def graph_data():
     if DEMO_MODE:
         return jsonify({
             "nodes": DEMO_ENTITIES, "edges": DEMO_EDGES,
-            "demo_mode": True, "message": "Synthetic demo graph data"
+            "demo_mode": True, "message": "Synthetic demo graph data",
         })
     try:
         graph = get_graph()
@@ -223,13 +272,12 @@ def graph_data():
             "MATCH (a:Entity)-[r]->(b:Entity) RETURN a.id, type(r), b.id"
         )
         nodes = [
-            {"id": row[0], "name": row[1], "kind": row[2], "risk": row[3],
-             "detail": row[4], "timestamp": row[5]}
-            for row in node_result.result_set
+            {"id": r[0], "name": r[1], "kind": r[2], "risk": r[3], "detail": r[4], "timestamp": r[5]}
+            for r in node_result.result_set
         ]
         edges = [
-            {"source": row[0], "label": row[1], "target": row[2]}
-            for row in edge_result.result_set
+            {"source": r[0], "label": r[1], "target": r[2]}
+            for r in edge_result.result_set
         ]
         return jsonify({"nodes": nodes, "edges": edges})
     except Exception:
@@ -250,21 +298,19 @@ def investigate():
         findings = []
         for row in result.result_set:
             risk = row[4] or "UNKNOWN"
+            if risk == "HIGH":
+                rec = "Verify the login with the user, review authentication logs, and confirm device ownership."
+            elif risk == "MEDIUM":
+                rec = "Review surrounding authentication events and continue monitoring."
+            else:
+                rec = "Continue routine monitoring and retain the event for audit history."
             findings.append({
                 "user": row[0], "event": row[1], "ip": row[2], "device": row[3],
                 "risk": risk, "reason": row[5] or "No explanation available",
-                "timestamp": row[6],
-                "recommendation": (
-                    "Verify the login with the user, review authentication logs, and confirm device ownership."
-                    if risk == "HIGH" else
-                    "Review surrounding authentication events and continue monitoring."
-                    if risk == "MEDIUM" else
-                    "Continue routine monitoring and retain the event for audit history."
-                ),
-                "notice": "Demo rule-based classification; investigate further before concluding an attack occurred."
+                "timestamp": row[6], "recommendation": rec,
+                "notice": "Demo rule-based classification; investigate further before concluding an attack occurred.",
             })
-        priority = {"HIGH": 0, "MEDIUM": 1, "LOW": 2}
-        findings.sort(key=lambda item: priority.get(item["risk"], 3))
+        findings.sort(key=lambda item: RISK_PRIORITY.get(item["risk"], 3))
         return jsonify({"findings": findings})
     except Exception:
         app.logger.exception("Investigation failed")
@@ -289,19 +335,21 @@ def investigate_paths():
                 "user": {"id": row[0], "name": row[1]},
                 "event": {
                     "id": row[2], "name": row[3], "risk": row[4] or "UNKNOWN",
-                    "reason": row[5] or "No explanation available", "timestamp": row[6]
+                    "reason": row[5] or "No explanation available", "timestamp": row[6],
                 },
                 "relationship_from_user": "GENERATED",
                 "relationship_to_entity": row[7],
                 "connected_entity": {"id": row[8], "name": row[9], "kind": row[10], "detail": row[11]},
-                "notice": "Synthetic demo data. A graph connection is a lead for review, not proof of malicious activity."
+                "notice": "A graph connection is a lead for review, not proof of malicious activity.",
             })
-        priority = {"HIGH": 0, "MEDIUM": 1, "LOW": 2}
-        paths.sort(key=lambda item: priority.get(item["event"]["risk"], 3))
+        paths.sort(key=lambda item: RISK_PRIORITY.get(item["event"]["risk"], 3))
         return jsonify({"path_count": len(paths), "paths": paths})
     except Exception:
         app.logger.exception("Path investigation failed")
-        return jsonify({"error": "Path investigation failed while querying FalkorDB.", "path_count": 0, "paths": []}), 503
+        return jsonify({
+            "error": "Path investigation failed while querying FalkorDB.",
+            "path_count": 0, "paths": [],
+        }), 503
 
 
 @app.route("/api/ai-explain", methods=["POST"])
@@ -311,8 +359,8 @@ def ai_explain():
     if not question:
         return jsonify({"error": "Please provide a question."}), 400
 
-    # Render cannot reach Ollama running on the developer's laptop.
-    # In hosted demo mode, provide a transparent, deterministic explanation.
+    # Render cannot reach an Ollama model running on your laptop, so hosted
+    # demo mode returns a transparent, rule-based explanation instead.
     if DEMO_MODE:
         answer = (
             "Demo-mode explanation (rule-based, not generated by a live language model):\n\n"
@@ -333,9 +381,9 @@ def ai_explain():
     )
     try:
         response = requests.post(
-            f"{OLLAMA_URL.rstrip('/')}/api/generate",
+            OLLAMA_URL.rstrip("/") + "/api/generate",
             json={"model": OLLAMA_MODEL, "prompt": prompt, "stream": False},
-            timeout=120
+            timeout=120,
         )
         response.raise_for_status()
         result = response.json()
@@ -343,9 +391,15 @@ def ai_explain():
     except requests.RequestException:
         app.logger.exception("Local AI request failed")
         return jsonify({
-            "error": "Could not reach local Ollama. Start Ollama and confirm the model is installed, or enable DEMO_MODE for hosted demo explanations."
+            "error": "Could not reach local Ollama. Start Ollama and confirm the model is installed, "
+                     "or enable DEMO_MODE for hosted demo explanations."
         }), 503
 
 
 if __name__ == "__main__":
-    app.run(debug=os.getenv("FLASK_DEBUG", "false").lower() == "true", host="127.0.0.1", port=5000)
+    # Local development only. On Render, gunicorn starts the app instead.
+    app.run(
+        debug=os.getenv("FLASK_DEBUG", "false").lower() == "true",
+        host="127.0.0.1",
+        port=int(os.getenv("PORT", "5000")),
+    )
