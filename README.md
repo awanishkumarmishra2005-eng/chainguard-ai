@@ -268,6 +268,32 @@ container on the same user-defined Docker network and use the database
 container name as `FALKORDB_HOST`; do not use `localhost` from inside the Flask
 container.
 
+## Dashboard usage
+
+Open the local dashboard at `http://127.0.0.1:5000` after starting Flask.
+Use the graph refresh, investigation, and path controls to inspect existing
+data. Use **Load Demo Data** only when `ALLOW_GRAPH_WRITES=true` is explicitly
+set and writing synthetic data is approved for the selected graph.
+
+## Troubleshooting
+
+- **FalkorDB connection error:** confirm Docker Desktop and the existing
+  `chainguard-db` container are running; do not recreate a data-bearing
+  container without a verified RDB backup.
+- **Ollama error:** start Ollama and confirm `qwen2.5:1.5b` appears in
+  `ollama list`.
+- **No investigation paths:** verify the selected graph contains the expected
+  `Entity` relationships; do not seed the existing graph automatically.
+- **Port 5000 is occupied:** stop the older Flask process before restarting.
+
+## Evaluation notes
+
+- Demo identities, events, and relationships are fictional.
+- A graph relationship is an investigation lead, not proof of malicious activity.
+- AI explanations are informational and should be verified against available
+  evidence.
+- Do not use this prototype as the sole basis for real-world security decisions.
+
 ## Known limitations
 
 - This checkout contains no authentication, CSRF, rate limiting, audit-log,
