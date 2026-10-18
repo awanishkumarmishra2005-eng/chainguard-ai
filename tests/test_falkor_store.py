@@ -1,8 +1,17 @@
 import os
 import unittest
-from unittest.mock import patch
+from dataclasses import replace
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
-from falkor_store import FalkorConfigError, FalkorSettings, connect_graph
+from redis.exceptions import AuthenticationError, ConnectionError as RedisConnectionError, ResponseError
+
+from falkor_store import (
+    FalkorConfigError,
+    FalkorSettings,
+    connect_graph,
+    probe_graph,
+)
 
 
 class FalkorSettingsTests(unittest.TestCase):
@@ -55,6 +64,62 @@ class FalkorSettingsTests(unittest.TestCase):
             ssl_cert_reqs="required",
         )
         client_class.return_value.select_graph.assert_called_once_with("ChainGuard_Test")
+
+    def test_probe_accepts_authenticated_read_only_query_and_closes_client(self):
+        client = MagicMock()
+        graph = MagicMock()
+        graph.ro_query.return_value = SimpleNamespace(result_set=[])
+        client.select_graph.return_value = graph
+        settings = replace(
+            FalkorSettings.from_env({}),
+            username="graph-user",
+            password="example-password",
+        )
+        with patch("falkor_store.connect_client", return_value=client):
+            result = probe_graph(settings)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["database"], "connected")
+        self.assertEqual(result["checks"]["authentication"], "ok")
+        self.assertEqual(result["checks"]["query"], "ok")
+        graph.ro_query.assert_called_once()
+        client.close.assert_called_once_with()
+
+    def test_probe_classifies_graph_query_permission_failure_without_leaking_error(self):
+        client = MagicMock()
+        graph = MagicMock()
+        graph.ro_query.side_effect = ResponseError("secret provider detail")
+        client.select_graph.return_value = graph
+        with patch("falkor_store.connect_client", return_value=client):
+            result = probe_graph(FalkorSettings.from_env({}))
+
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["error_code"], "graph_query_failed")
+        self.assertNotIn("secret provider detail", result["message"])
+        client.close.assert_called_once_with()
+
+    def test_probe_distinguishes_connection_and_authentication_failures(self):
+        with patch("falkor_store.connect_client", side_effect=RedisConnectionError("private host")):
+            connection_result = probe_graph(FalkorSettings.from_env({}))
+        with patch("falkor_store.connect_client", side_effect=AuthenticationError("secret detail")):
+            auth_result = probe_graph(FalkorSettings.from_env({}))
+
+        self.assertEqual(connection_result["error_code"], "connection_failed")
+        self.assertEqual(auth_result["error_code"], "authentication_failed")
+        self.assertNotIn("private host", connection_result["message"])
+        self.assertNotIn("secret detail", auth_result["message"])
+
+    def test_probe_rejects_malformed_result_without_false_success(self):
+        client = MagicMock()
+        graph = MagicMock()
+        graph.ro_query.return_value = object()
+        client.select_graph.return_value = graph
+        with patch("falkor_store.connect_client", return_value=client):
+            result = probe_graph(FalkorSettings.from_env({}))
+
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["error_code"], "probe_failed")
+        client.close.assert_called_once_with()
 
 
 @unittest.skipUnless(

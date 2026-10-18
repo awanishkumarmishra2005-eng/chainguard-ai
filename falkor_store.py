@@ -12,6 +12,14 @@ import os
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
+from redis.exceptions import (
+    AuthenticationError,
+    ConnectionError as RedisConnectionError,
+    NoPermissionError,
+    ResponseError,
+    TimeoutError as RedisTimeoutError,
+)
+
 try:
     from falkordb import FalkorDB
 except Exception as exc:  # pragma: no cover - depends on the environment
@@ -167,14 +175,7 @@ class FalkorSettings:
         }
 
 
-def connect_graph(settings: FalkorSettings | None = None):
-    """Create a FalkorDB graph handle without changing graph contents."""
-
-    if FalkorDB is None:
-        detail = type(_IMPORT_ERROR).__name__ if _IMPORT_ERROR else "missing package"
-        raise FalkorDependencyError(f"FalkorDB client unavailable ({detail})")
-
-    settings = settings or FalkorSettings.from_env()
+def _client_kwargs(settings: FalkorSettings) -> dict[str, object]:
     kwargs: dict[str, object] = {
         "socket_connect_timeout": settings.connect_timeout,
         "socket_timeout": settings.socket_timeout,
@@ -184,13 +185,95 @@ def connect_graph(settings: FalkorSettings | None = None):
     if settings.password:
         kwargs["password"] = settings.password
     if settings.tls:
-        kwargs["ssl"] = True
         kwargs["ssl_cert_reqs"] = settings.ssl_cert_reqs or "required"
         if settings.ssl_ca_certs:
             kwargs["ssl_ca_certs"] = settings.ssl_ca_certs
+    return kwargs
+
+
+def connect_client(settings: FalkorSettings | None = None):
+    """Create a FalkorDB client without selecting or changing a graph."""
+    if FalkorDB is None:
+        detail = type(_IMPORT_ERROR).__name__ if _IMPORT_ERROR else "missing package"
+        raise FalkorDependencyError(f"FalkorDB client unavailable ({detail})")
+
+    settings = settings or FalkorSettings.from_env()
+    kwargs = _client_kwargs(settings)
 
     if settings.url:
-        client = FalkorDB.from_url(settings.url, **kwargs)
-    else:
-        client = FalkorDB(host=settings.host, port=settings.port, **kwargs)
+        scheme = urlsplit(settings.url).scheme.lower()
+        if settings.tls and scheme not in {"falkors", "rediss"}:
+            kwargs["ssl"] = True
+        return FalkorDB.from_url(settings.url, **kwargs)
+    if settings.tls:
+        kwargs["ssl"] = True
+    return FalkorDB(host=settings.host, port=settings.port, **kwargs)
+
+
+def connect_graph(settings: FalkorSettings | None = None):
+    """Create a FalkorDB graph handle without changing graph contents."""
+
+    settings = settings or FalkorSettings.from_env()
+    client = connect_client(settings)
     return client.select_graph(settings.graph_name)
+
+
+def _probe_error(exc: Exception) -> tuple[str, str]:
+    if isinstance(exc, AuthenticationError):
+        return "authentication_failed", "FalkorDB authentication failed."
+    if isinstance(exc, NoPermissionError):
+        return "permission_denied", "The configured FalkorDB identity cannot query the graph."
+    if isinstance(exc, (RedisConnectionError, RedisTimeoutError, TimeoutError)):
+        return "connection_failed", "FalkorDB could not be reached within the configured timeout."
+    if isinstance(exc, ResponseError):
+        return "graph_query_failed", "The configured graph rejected the health query."
+    if isinstance(exc, FalkorConfigError):
+        return "invalid_configuration", str(exc)
+    return "probe_failed", "FalkorDB health verification failed."
+
+
+def probe_graph(settings: FalkorSettings | None = None) -> dict[str, object]:
+    """Run a safe read-only query and return sanitized connection status."""
+
+    checks: dict[str, str] = {
+        "configuration": "not_checked",
+        "reachable": "not_checked",
+        "authentication": "not_checked",
+        "graph": "not_checked",
+        "query": "not_checked",
+    }
+    client = None
+    try:
+        settings = settings or FalkorSettings.from_env()
+        checks["configuration"] = "ok"
+        client = connect_client(settings)
+        checks["reachable"] = "ok"
+        checks["authentication"] = "ok" if settings.username or settings.password else "not_configured"
+        graph = client.select_graph(settings.graph_name)
+        result = graph.ro_query(
+            "MATCH (n) RETURN 1 AS probe LIMIT 1",
+            timeout=settings.socket_timeout * 1000,
+        )
+        if not hasattr(result, "result_set") or not isinstance(result.result_set, list):
+            raise TypeError("unexpected FalkorDB result")
+        checks["graph"] = "ok"
+        checks["query"] = "ok"
+        return {
+            "status": "ok",
+            "database": "connected",
+            "graph": settings.graph_name,
+            "checks": checks,
+            "message": "FalkorDB graph query succeeded.",
+        }
+    except Exception as exc:
+        code, message = _probe_error(exc)
+        return {
+            "status": "error",
+            "database": "unavailable",
+            "checks": checks,
+            "error_code": code,
+            "message": message,
+        }
+    finally:
+        if client is not None and hasattr(client, "close"):
+            client.close()

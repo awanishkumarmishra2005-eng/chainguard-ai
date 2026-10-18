@@ -8,6 +8,7 @@ from falkor_store import (
     FalkorDependencyError,
     FalkorSettings,
     connect_graph,
+    probe_graph,
 )
 
 app = Flask(__name__)
@@ -272,6 +273,17 @@ def health():
         app.logger.warning("FalkorDB health check unavailable: %s", message)
         return jsonify({"status": "ok", "application": "ok", "graph": "unavailable",
                         "database": "unavailable", "message": message}), 200
+
+
+@app.route("/api/health/database")
+def database_health():
+    """Perform an actual safe FalkorDB query, including in demo mode."""
+
+    result = probe_graph()
+    result["application"] = "ok"
+    result["serving_mode"] = "demo" if DEMO_MODE else "live"
+    result["data_source"] = "falkordb"
+    return jsonify(result), 200 if result["status"] == "ok" else 503
 
 
 @app.route("/api/seed", methods=["POST", "GET"])

@@ -112,6 +112,39 @@ class AppHealthTests(unittest.TestCase):
         self.assertEqual(response.get_json()["mode"], "demo_rule_based")
         self.assertTrue(response.get_json()["demo_mode"])
 
+    def test_database_health_reports_a_real_probe_separately_from_demo_health(self):
+        app.DEMO_MODE = True
+        probe = {
+            "status": "ok", "database": "connected", "graph": "ChainGuard",
+            "checks": {"configuration": "ok", "reachable": "ok",
+                       "authentication": "ok", "graph": "ok", "query": "ok"},
+            "message": "FalkorDB graph query succeeded.",
+        }
+        with patch("app.probe_graph", return_value=probe) as probe_mock:
+            response = self.client.get("/api/health/database")
+
+        body = response.get_json()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(body["serving_mode"], "demo")
+        self.assertEqual(body["data_source"], "falkordb")
+        self.assertEqual(body["checks"]["query"], "ok")
+        probe_mock.assert_called_once_with()
+
+    def test_database_health_returns_503_for_probe_failure(self):
+        probe = {
+            "status": "error", "database": "unavailable",
+            "checks": {"configuration": "ok", "reachable": "error",
+                       "authentication": "not_checked", "graph": "not_checked",
+                       "query": "not_checked"},
+            "error_code": "connection_failed",
+            "message": "FalkorDB could not be reached within the configured timeout.",
+        }
+        with patch("app.probe_graph", return_value=probe):
+            response = self.client.get("/api/health/database")
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.get_json()["error_code"], "connection_failed")
+
 
 if __name__ == "__main__":
     unittest.main()

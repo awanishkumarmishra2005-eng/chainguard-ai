@@ -107,14 +107,18 @@ Run these commands from this `chainguard_fixed` directory.
    ```powershell
    Invoke-RestMethod http://127.0.0.1:5000/api/version
    Invoke-RestMethod http://127.0.0.1:5000/api/health
+   Invoke-RestMethod http://127.0.0.1:5000/api/health/database
    Invoke-RestMethod http://127.0.0.1:5000/api/graph
    Invoke-RestMethod http://127.0.0.1:5000/api/investigate
    Invoke-RestMethod http://127.0.0.1:5000/api/investigate-paths
    ```
 
-   Expected live health fields include `application: "ok"`, `graph: "ok"`,
-   and `database: "connected"`. A real graph query must succeed before the
-   UI is described as connected.
+   `/api/health` is the Flask application-liveness check. Use
+   `/api/health/database` for a real, read-only FalkorDB query. Its successful
+   response includes `application: "ok"`, `database: "connected"`,
+   `graph: "ChainGuard"`, and checks for configuration, reachability,
+   authentication status, graph selection, and query success. Demo mode on
+   `/api/health` does not prove that a hosted database is reachable.
 
    Test an evidence-grounded AI explanation without writing graph data:
 
