@@ -24,6 +24,38 @@ class AppHealthTests(unittest.TestCase):
         self.assertEqual(response.get_json()["graph"], "demo_mode")
         self.assertEqual(response.get_json()["database"], "demo_mode")
 
+    def test_demo_graph_returns_fictional_nodes_and_relationships(self):
+        app.DEMO_MODE = True
+
+        response = self.client.get("/api/graph")
+        body = response.get_json()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(body["demo_mode"])
+        self.assertGreater(len(body["nodes"]), 0)
+        self.assertGreater(len(body["edges"]), 0)
+
+    def test_demo_investigation_returns_findings(self):
+        app.DEMO_MODE = True
+
+        response = self.client.get("/api/investigate")
+        body = response.get_json()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(body["demo_mode"])
+        self.assertGreater(len(body["findings"]), 0)
+
+    def test_demo_paths_returns_connected_paths(self):
+        app.DEMO_MODE = True
+
+        response = self.client.get("/api/investigate-paths")
+        body = response.get_json()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(body["demo_mode"])
+        self.assertGreater(body["path_count"], 0)
+        self.assertEqual(body["path_count"], len(body["paths"]))
+
     def test_graph_outage_does_not_make_flask_health_look_down(self):
         app.DEMO_MODE = False
         with patch("app.graph_status", side_effect=OSError("connection refused")):
